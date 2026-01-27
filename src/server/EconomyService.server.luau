@@ -34,6 +34,39 @@ if not dataLoadedEvent then
 	dataLoadedEvent.Parent = ServerScriptService
 end
 
+local LEADERBOARD_INTERVAL = 10
+local leaderboardValues = {}
+local leaderboardTimers = {}
+
+local function ensureLeaderboard(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then
+		leaderstats = Instance.new("Folder")
+		leaderstats.Name = "leaderstats"
+		leaderstats.Parent = player
+	end
+
+	local biomassStat = leaderstats:FindFirstChild("Biomass")
+	if not biomassStat then
+		biomassStat = Instance.new("IntValue")
+		biomassStat.Name = "Biomass"
+		biomassStat.Value = 0
+		biomassStat.Parent = leaderstats
+	end
+
+	leaderboardValues[player] = biomassStat
+	leaderboardTimers[player] = os.clock()
+end
+
+local function updateLeaderboard(player)
+	local stat = leaderboardValues[player]
+	local state = PlayerState.Get(player)
+	if stat and state then
+		stat.Value = math.floor(state.Biomass)
+	end
+	leaderboardTimers[player] = os.clock()
+end
+
 local DATASTORE_NAME = "PlayerStateV1"
 local SAVE_INTERVAL = 90
 local SAVE_DEBOUNCE = 15
@@ -141,6 +174,7 @@ end
 
 local function ensureState(player)
 	PlayerState.GetOrCreate(player)
+	ensureLeaderboard(player)
 	task.spawn(function()
 		local bonus = loadPlayerData(player)
 		local state = PlayerState.Get(player)
@@ -149,6 +183,7 @@ local function ensureState(player)
 		end
 		print("[Economy] State for", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
 		biomassUpdate:FireClient(player, math.floor(state.Biomass))
+		updateLeaderboard(player)
 		if bonus > 0 then
 			offlineEarningsEvent:FireClient(player, bonus)
 		end
@@ -159,6 +194,8 @@ end
 local function removeState(player)
 	savePlayerData(player, true)
 	PlayerState.Remove(player)
+	leaderboardValues[player] = nil
+	leaderboardTimers[player] = nil
 end
 
 Players.PlayerAdded:Connect(ensureState)
@@ -180,6 +217,10 @@ task.spawn(function()
 			if player.Parent then
 				state.Biomass += (state.PPS or 0) * dt
 				biomassUpdate:FireClient(player, math.floor(state.Biomass))
+				local lastUpdate = leaderboardTimers[player] or 0
+				if os.clock() - lastUpdate >= LEADERBOARD_INTERVAL then
+					updateLeaderboard(player)
+				end
 				-- debug: show ticking
 				-- print("[EconomyTick]", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
 			end
