@@ -23,6 +23,55 @@ end
 
 local assignedPlots = {}
 local buttonDebounce = {}
+local effectsFolder = Workspace:FindFirstChild("UpgradeEffects")
+if not effectsFolder then
+	effectsFolder = Instance.new("Folder")
+	effectsFolder.Name = "UpgradeEffects"
+	effectsFolder.Parent = Workspace
+end
+
+local function spawnPurchaseEffect(button)
+	local emitters = {}
+	for _, descendant in ipairs(button:GetDescendants()) do
+		if descendant:IsA("ParticleEmitter") then
+			table.insert(emitters, descendant:Clone())
+		end
+	end
+
+	if #emitters == 0 then
+		return
+	end
+
+	local host = Instance.new("Part")
+	host.Name = button.Name .. "_Effect"
+	host.Anchored = true
+	host.CanCollide = false
+	host.CanTouch = false
+	host.CanQuery = false
+	host.Transparency = 1
+	host.Size = Vector3.new(1, 1, 1)
+	host.CFrame = button.CFrame
+	host.Parent = effectsFolder
+
+	for _, emitter in ipairs(emitters) do
+		emitter.Enabled = true
+		emitter.Parent = host
+	end
+
+	task.delay(0.8, function()
+		for _, emitter in ipairs(emitters) do
+			if emitter then
+				emitter.Enabled = false
+			end
+		end
+	end)
+
+	task.delay(1.2, function()
+		if host then
+			host:Destroy()
+		end
+	end)
+end
 
 local dataLoadedEvent = ServerScriptService:FindFirstChild("PlayerDataLoaded")
 if not dataLoadedEvent then
@@ -63,6 +112,28 @@ local upgradeNameById = {}
 for index, upgrade in ipairs(UpgradesConfig) do
 	upgradeIndexById[upgrade.id] = index
 	upgradeNameById[upgrade.id] = "Upgrade" .. tostring(index)
+end
+
+local function updatePlotSign(plot, player)
+	if not plot then
+		return
+	end
+
+	local sign = plot:FindFirstChild("PlotSignOwner1")
+	if not sign then
+		return
+	end
+
+	local label = sign:FindFirstChildWhichIsA("TextLabel", true)
+	if not label then
+		return
+	end
+
+	if player then
+		label.Text = string.upper(player.Name) .. "'S PLOT"
+	else
+		label.Text = "EMPTY"
+	end
 end
 
 local function ensureTemplateFolder(plot)
@@ -203,6 +274,7 @@ local function assignPlot(player)
 	end
 
 	print("Assigned", player.Name, "to", plot.Name)
+	updatePlotSign(plot, player)
 end
 
 local function releasePlot(player)
@@ -213,6 +285,7 @@ local function releasePlot(player)
 		PlayerState.ReleasePlot(player)
 		player.RespawnLocation = nil
 		print("Released plot for", player.Name)
+		updatePlotSign(plot, nil)
 	end
 end
 
@@ -280,25 +353,17 @@ local function setupUpgradeButton(plot, button, upgrade)
 		biomassUpdate:FireClient(player, math.floor(state.Biomass))
 		applyVisualUpgrade(plot, upgrade.id)
 
-		local emitter = button:FindFirstChildWhichIsA("ParticleEmitter")
-		if emitter then
-			emitter.Enabled = true
-			task.delay(0.6, function()
-				if emitter then
-					emitter.Enabled = false
-				end
-			end)
-		end
+		spawnPurchaseEffect(button)
 
-		button.CanTouch = false
-		button.CanQuery = false
-		button.Transparency = 1
-		task.delay(0.6, function()
-			if button then
-				buttonDebounce[button] = nil
-				button:Destroy()
-			end
-		end)
+	button.CanTouch = false
+	button.CanQuery = false
+	button.Transparency = 1
+	task.delay(0.6, function()
+		if button then
+			buttonDebounce[button] = nil
+			button:Destroy()
+		end
+	end)
 	end)
 end
 
@@ -318,6 +383,7 @@ dataLoadedEvent.Event:Connect(function(player)
 	local plot = assignedPlots[player.UserId]
 	if plot then
 		applyVisualsForPlayerPlot(player, plot)
+		updatePlotSign(plot, player)
 	end
 end)
 
