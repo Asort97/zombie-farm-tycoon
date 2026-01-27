@@ -12,7 +12,26 @@ if not PlotsFolder then
 	PlotsFolder.Parent = Workspace
 	print("[PlotService] Created missing Plots folder in Workspace")
 end
-local biomassUpdate = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("BiomassUpdate")
+local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+local biomassUpdate = remotesFolder:WaitForChild("BiomassUpdate")
+local inventoryUpdate = remotesFolder:FindFirstChild("InventoryUpdate")
+if not inventoryUpdate then
+	inventoryUpdate = Instance.new("RemoteEvent")
+	inventoryUpdate.Name = "InventoryUpdate"
+	inventoryUpdate.Parent = remotesFolder
+end
+local inventoryAction = remotesFolder:FindFirstChild("InventoryAction")
+if not inventoryAction then
+	inventoryAction = Instance.new("RemoteEvent")
+	inventoryAction.Name = "InventoryAction"
+	inventoryAction.Parent = remotesFolder
+end
+local function sendInventory(player)
+	local state = PlayerState.Get(player)
+	if state then
+		inventoryUpdate:FireClient(player, state.Zombies or {})
+	end
+end
 local ClearDataEvent = ReplicatedStorage:WaitForChild("ClearDataEvent")
 local templatesRoot = ServerStorage:FindFirstChild("UpgradeVisualTemplates")
 if not templatesRoot then
@@ -24,6 +43,7 @@ end
 local assignedPlots = {}
 local buttonDebounce = {}
 local effectsFolder = Workspace:FindFirstChild("UpgradeEffects")
+math.randomseed(os.clock())
 if not effectsFolder then
 	effectsFolder = Instance.new("Folder")
 	effectsFolder.Name = "UpgradeEffects"
@@ -134,6 +154,30 @@ local function updatePlotSign(plot, player)
 	else
 		label.Text = "EMPTY"
 	end
+end
+
+local HATCH_COST = 1000
+local HATCH_DEBOUNCE = 1
+local hatchCooldowns = {}
+
+local ZOMBIE_RARITIES = {
+	{name = "Common", chance = 60, pps = 2, color = Color3.fromRGB(145, 145, 145)},
+	{name = "Uncommon", chance = 25, pps = 5, color = Color3.fromRGB(0, 205, 0)},
+	{name = "Rare", chance = 10, pps = 12, color = Color3.fromRGB(0, 128, 255)},
+	{name = "Epic", chance = 4, pps = 30, color = Color3.fromRGB(170, 85, 255)},
+	{name = "Legendary", chance = 1, pps = 80, color = Color3.fromRGB(255, 200, 0)},
+}
+
+local function rollZombieRarity()
+	local roll = math.random(1, 100)
+	local sum = 0
+	for _, rarity in ipairs(ZOMBIE_RARITIES) do
+		sum += rarity.chance
+		if roll <= sum then
+			return rarity
+		end
+	end
+	return ZOMBIE_RARITIES[#ZOMBIE_RARITIES]
 end
 
 local function ensureTemplateFolder(plot)
@@ -347,9 +391,10 @@ local function setupUpgradeButton(plot, button, upgrade)
 
 		buttonDebounce[button] = true
 		state.Biomass -= upgrade.price
-		state.PPS = (state.PPS + (upgrade.addPps or 0)) * (upgrade.addMult or 1)
+		state.InfraPPS = (state.InfraPPS + (upgrade.addPps or 0)) * (upgrade.addMult or 1)
 		state.OwnedUpgrades[upgrade.id] = true
-		print("Purchased", upgrade.id, "new PPS", state.PPS, "biomass", state.Biomass)
+		local totalPPS = PlayerState.GetTotalPPS(state)
+		print("Purchased", upgrade.id, "new InfraPPS", state.InfraPPS, "total PPS", totalPPS, "biomass", state.Biomass)
 		biomassUpdate:FireClient(player, math.floor(state.Biomass))
 		applyVisualUpgrade(plot, upgrade.id)
 
@@ -367,6 +412,70 @@ local function setupUpgradeButton(plot, button, upgrade)
 	end)
 end
 
+local function canHatch(player)
+	local now = os.clock()
+	local last = hatchCooldowns[player]
+	if last and now - last < HATCH_DEBOUNCE then
+		return false
+	end
+	hatchCooldowns[player] = now
+	return true
+end
+
+local function setupHatchButton(plot, button)
+	if not button or not button:IsA("BasePart") then
+		return
+	end
+
+	print("[PlotService] Hatch button hooked on", plot.Name)
+
+	local baseCost = HATCH_COST
+	button.Touched:Connect(function(hit)
+		local character = hit.Parent
+		if not character then
+			return
+		end
+
+		local player = Players:GetPlayerFromCharacter(character)
+		if not player then
+			return
+		end
+
+		print("[PlotService] Hatch touched by", player.Name)
+
+		if not canHatch(player) then
+			return
+		end
+
+		local ownerId = plot:GetAttribute("OwnerUserId")
+		if ownerId ~= player.UserId then
+			print("[PlotService] Hatch rejected wrong owner", ownerId, player.UserId)
+			return
+		end
+
+		local state = PlayerState.Get(player)
+		if not state or state.Plot ~= plot then
+			return
+		end
+
+		if state.Biomass < baseCost then
+			return
+		end
+
+		state.Biomass -= baseCost
+		local rarity = rollZombieRarity()
+		local zombieId = tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+		local zombieRecord = {id = zombieId, rarity = rarity.name, pps = rarity.pps, color = rarity.color}
+		PlayerState.AddZombie(player, zombieRecord)
+
+		local totalPPS = PlayerState.GetTotalPPS(state)
+		print("[PlotService] Hatched", rarity.name, "zombie for", player.Name, "total PPS", totalPPS)
+		biomassUpdate:FireClient(player, math.floor(state.Biomass))
+		spawnPurchaseEffect(button)
+		sendInventory(player)
+	end)
+end
+
 for _, plot in ipairs(PlotsFolder:GetChildren()) do
 	for index, upgrade in ipairs(UpgradesConfig) do
 		local buttonName = "Button_Upgrade" .. tostring(index)
@@ -377,6 +486,12 @@ for _, plot in ipairs(PlotsFolder:GetChildren()) do
 			print("[PlotService] Missing", buttonName, "in plot", plot.Name)
 		end
 	end
+	local hatchButton = plot:FindFirstChild("Button_HatchZombie")
+	if hatchButton then
+		setupHatchButton(plot, hatchButton)
+	else
+		print("[PlotService] Missing Button_HatchZombie in plot", plot.Name)
+	end
 end
 
 dataLoadedEvent.Event:Connect(function(player)
@@ -384,6 +499,10 @@ dataLoadedEvent.Event:Connect(function(player)
 	if plot then
 		applyVisualsForPlayerPlot(player, plot)
 		updatePlotSign(plot, player)
+		local state = PlayerState.Get(player)
+		if state then
+			sendInventory(player)
+		end
 	end
 end)
 
@@ -392,7 +511,9 @@ ClearDataEvent.OnServerEvent:Connect(function(player)
 	if state then
 		state.Biomass = 0
 		state.OwnedUpgrades = {}
-		state.PPS = PlayerState.DEFAULT_PPS or 10
+		state.InfraPPS = PlayerState.DEFAULT_INFRA_PPS or 10
+		state.Multiplier = PlayerState.DEFAULT_MULTIPLIER or 1
+		PlayerState.RebuildZombies(player, {})
 
 		local plot = state.Plot
 		if plot then
@@ -405,6 +526,32 @@ ClearDataEvent.OnServerEvent:Connect(function(player)
 		end
 
 		biomassUpdate:FireClient(player, state.Biomass)
+	end
+end)
+
+inventoryAction.OnServerEvent:Connect(function(player, action, targetId)
+	local state = PlayerState.Get(player)
+	if not state then
+		return
+	end
+	if action == "SellZombie" and targetId then
+		local indexToRemove
+		for i,zombie in ipairs(state.Zombies) do
+			if zombie.id == targetId then
+				indexToRemove = i
+				break
+			end
+		end
+		if indexToRemove then
+			local zombie = table.remove(state.Zombies, indexToRemove)
+			state.Biomass += (zombie.pps or 0) * 100
+			PlayerState.RebuildZombies(player, state.Zombies)
+			if state.Plot then
+			end
+			biomassUpdate:FireClient(player, math.floor(state.Biomass))
+			sendInventory(player)
+		end
+		sendInventory(player)
 	end
 end)
 

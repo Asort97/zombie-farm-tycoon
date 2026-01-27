@@ -4,7 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerState = require(script.Parent:WaitForChild("PlayerState"))
-local DEFAULT_PPS = PlayerState.DEFAULT_PPS or 10
+local DEFAULT_INFRA = PlayerState.DEFAULT_INFRA_PPS or 10
 
 local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
 if not remotesFolder then
@@ -98,8 +98,10 @@ end
 local function serializeState(state)
 	return {
 		Biomass = state.Biomass,
-		PPS = state.PPS,
+		InfraPPS = state.InfraPPS,
+		Multiplier = state.Multiplier,
 		OwnedUpgrades = state.OwnedUpgrades,
+		Zombies = state.Zombies,
 		lastSeen = os.time(),
 	}
 end
@@ -114,26 +116,30 @@ local function loadPlayerData(player)
 		return playerStore:GetAsync(key)
 	end)
 
+	local state = PlayerState.GetOrCreate(player)
 	if not success or type(data) ~= "table" then
-		local state = PlayerState.GetOrCreate(player)
-		state.PPS = DEFAULT_PPS
+		state.InfraPPS = DEFAULT_INFRA
+		state.Multiplier = PlayerState.DEFAULT_MULTIPLIER or 1
+		PlayerState.RebuildZombies(player, {})
 		return 0
 	end
 
-	local state = PlayerState.GetOrCreate(player)
 	state.Biomass = tonumber(data.Biomass) or 0
-	state.PPS = math.max(DEFAULT_PPS, tonumber(data.PPS) or DEFAULT_PPS)
+	state.InfraPPS = tonumber(data.InfraPPS) or DEFAULT_INFRA
+	state.Multiplier = tonumber(data.Multiplier) or PlayerState.DEFAULT_MULTIPLIER or 1
 	state.OwnedUpgrades = type(data.OwnedUpgrades) == "table" and data.OwnedUpgrades or {}
+	PlayerState.RebuildZombies(player, type(data.Zombies) == "table" and data.Zombies or {})
 	state.lastSeen = tonumber(data.lastSeen) or 0
-	if state.Plot and state.PPS == 0 then
-		state.PPS = DEFAULT_PPS
+	if state.Plot and state.InfraPPS == 0 then
+		state.InfraPPS = DEFAULT_INFRA
 	end
 
 	local now = os.time()
 	local offlineSeconds = math.clamp(now - state.lastSeen, 0, MAX_OFFLINE_SECONDS)
 	local bonus = 0
-	if offlineSeconds > 0 and state.PPS > 0 then
-		bonus = math.floor(offlineSeconds * state.PPS)
+	local totalPPS = PlayerState.GetTotalPPS(state)
+	if offlineSeconds > 0 and totalPPS > 0 then
+		bonus = math.floor(offlineSeconds * totalPPS)
 		state.Biomass += bonus
 	end
 	state.lastSeen = now
@@ -181,7 +187,8 @@ local function ensureState(player)
 		if not state or not player.Parent then
 			return
 		end
-		print("[Economy] State for", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
+		local totalPPS = PlayerState.GetTotalPPS(state)
+		print("[Economy] State for", player.Name, "PPS", totalPPS, "Biomass", state.Biomass)
 		biomassUpdate:FireClient(player, math.floor(state.Biomass))
 		updateLeaderboard(player)
 		if bonus > 0 then
@@ -215,14 +222,15 @@ task.spawn(function()
 
 		for player, state in pairs(PlayerState.GetAll()) do
 			if player.Parent then
-				state.Biomass += (state.PPS or 0) * dt
+				local totalPPS = PlayerState.GetTotalPPS(state)
+				state.Biomass += totalPPS * dt
 				biomassUpdate:FireClient(player, math.floor(state.Biomass))
 				local lastUpdate = leaderboardTimers[player] or 0
 				if os.clock() - lastUpdate >= LEADERBOARD_INTERVAL then
 					updateLeaderboard(player)
 				end
 				-- debug: show ticking
-				-- print("[EconomyTick]", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
+				-- print("[EconomyTick]", player.Name, "PPS", totalPPS, "Biomass", state.Biomass)
 			end
 		end
 	end
