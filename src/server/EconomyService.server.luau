@@ -1,8 +1,10 @@
 local Players = game:GetService("Players")
 local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerState = require(script.Parent:WaitForChild("PlayerState"))
+local DEFAULT_PPS = PlayerState.DEFAULT_PPS or 10
 
 local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
 if not remotesFolder then
@@ -25,6 +27,13 @@ if not offlineEarningsEvent then
 	offlineEarningsEvent.Parent = remotesFolder
 end
 
+local dataLoadedEvent = ServerScriptService:FindFirstChild("PlayerDataLoaded")
+if not dataLoadedEvent then
+	dataLoadedEvent = Instance.new("BindableEvent")
+	dataLoadedEvent.Name = "PlayerDataLoaded"
+	dataLoadedEvent.Parent = ServerScriptService
+end
+
 local DATASTORE_NAME = "PlayerStateV1"
 local SAVE_INTERVAL = 90
 local SAVE_DEBOUNCE = 15
@@ -32,7 +41,11 @@ local MAX_OFFLINE_SECONDS = 6 * 60 * 60
 local RETRY_COUNT = 5
 local RETRY_BASE_DELAY = 0.5
 
-local playerStore = DataStoreService:GetDataStore(DATASTORE_NAME)
+local DATASTORE_ENABLED = game.GameId ~= 0
+local playerStore = nil
+if DATASTORE_ENABLED then
+	playerStore = DataStoreService:GetDataStore(DATASTORE_NAME)
+end
 local saveInFlight = {}
 local lastSaveTime = {}
 
@@ -60,21 +73,27 @@ end
 
 local function loadPlayerData(player)
 	local key = tostring(player.UserId)
+	if not DATASTORE_ENABLED then
+		return 0
+	end
+
 	local success, data = runWithRetries(function()
 		return playerStore:GetAsync(key)
 	end)
 
 	if not success or type(data) ~= "table" then
+		local state = PlayerState.GetOrCreate(player)
+		state.PPS = DEFAULT_PPS
 		return 0
 	end
 
 	local state = PlayerState.GetOrCreate(player)
 	state.Biomass = tonumber(data.Biomass) or 0
-	state.PPS = tonumber(data.PPS) or 0
+	state.PPS = math.max(DEFAULT_PPS, tonumber(data.PPS) or DEFAULT_PPS)
 	state.OwnedUpgrades = type(data.OwnedUpgrades) == "table" and data.OwnedUpgrades or {}
 	state.lastSeen = tonumber(data.lastSeen) or 0
 	if state.Plot and state.PPS == 0 then
-		state.PPS = 1
+		state.PPS = DEFAULT_PPS
 	end
 
 	local now = os.time()
@@ -92,6 +111,9 @@ end
 local function savePlayerData(player, force)
 	local state = PlayerState.Get(player)
 	if not state then
+		return
+	end
+	if not DATASTORE_ENABLED then
 		return
 	end
 
@@ -125,10 +147,12 @@ local function ensureState(player)
 		if not state or not player.Parent then
 			return
 		end
+		print("[Economy] State for", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
 		biomassUpdate:FireClient(player, math.floor(state.Biomass))
 		if bonus > 0 then
 			offlineEarningsEvent:FireClient(player, bonus)
 		end
+		dataLoadedEvent:Fire(player)
 	end)
 end
 
@@ -156,6 +180,8 @@ task.spawn(function()
 			if player.Parent then
 				state.Biomass += (state.PPS or 0) * dt
 				biomassUpdate:FireClient(player, math.floor(state.Biomass))
+				-- debug: show ticking
+				-- print("[EconomyTick]", player.Name, "PPS", state.PPS, "Biomass", state.Biomass)
 			end
 		end
 	end
@@ -164,6 +190,9 @@ end)
 task.spawn(function()
 	while true do
 		task.wait(SAVE_INTERVAL)
+		if not DATASTORE_ENABLED then
+			continue
+		end
 		for _, player in ipairs(Players:GetPlayers()) do
 			savePlayerData(player, false)
 		end
@@ -171,6 +200,9 @@ task.spawn(function()
 end)
 
 game:BindToClose(function()
+	if not DATASTORE_ENABLED then
+		return
+	end
 	for _, player in ipairs(Players:GetPlayers()) do
 		savePlayerData(player, true)
 	end

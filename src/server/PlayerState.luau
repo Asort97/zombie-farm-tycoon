@@ -2,10 +2,12 @@ local PlayerState = {}
 
 local stateByPlayer = {}
 
+local defaultPPS = 10
+
 local function createState()
 	return {
 		Biomass = 0,
-		PPS = 0,
+		PPS = defaultPPS,
 		Plot = nil,
 		OwnedUpgrades = {},
 		lastSeen = 0,
@@ -29,7 +31,7 @@ function PlayerState.AssignPlot(player, plot)
 	local state = PlayerState.GetOrCreate(player)
 	state.Plot = plot
 	if state.PPS == 0 then
-		state.PPS = 1
+		state.PPS = defaultPPS
 	end
 end
 
@@ -48,5 +50,7 @@ end
 function PlayerState.GetAll()
 	return stateByPlayer
 end
+
+PlayerState.DEFAULT_PPS = defaultPPS
 
 return PlayerState
